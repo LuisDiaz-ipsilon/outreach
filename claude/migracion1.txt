@@ -1,0 +1,260 @@
+# Contexto del proyecto — Handoff para Claude Code
+
+> Este documento resume TODO el contexto, decisiones y siguientes pasos de una sesión de diseño previa. El objetivo es retomar el trabajo exactamente donde se dejó, sin reexplicar nada ni repetir discusiones ya cerradas.
+
+---
+
+## 1. Nombre y objetivo del proyecto
+
+**Nombre del repo:** `outreach`
+**Ubicación local (Mac, ya tiene git):** `/Volumes/storage/lake1/Git-rasp/outreach`
+
+**Qué es:** Un motor de **inteligencia comercial / descubrimiento de leads**. NO es un "Instagram scraper" genérico ni un bot de mensajería. Construye una base de datos propia de potenciales clientes para **PAS Ticket**.
+
+**Objetivo en una línea:**
+```
+15 perfiles que ya conozco → miles descubiertos → los X que de verdad venden eventos
+```
+
+El resultado consumible es una consulta SQL:
+```sql
+SELECT * FROM counts WHERE verdict = 'lead' AND score >= 10;
+```
+De ahí el dueño arma un CSV **a mano** y contacta desde su cuenta oficial.
+
+---
+
+## 2. Contexto de negocio
+
+- **PAS Ticket** es el negocio: ayuda a organizadores a vender accesos/entradas a eventos directamente por WhatsApp, sin apps adicionales ni páginas complicadas.
+- **Quién es un lead (cliente potencial):** DJs, dueños de bandas, promotores, dueños de antros/venues, organizadores de expos, productoras, festivales, eventos privados con venta de acceso, y en general **cualquier perfil que cobre entrada o venda boletos**.
+- **Mercado:** México (Monterrey, CDMX, Guadalajara, etc.).
+- **El outreach es 100% MANUAL:** el sistema descubre, califica y **redacta** un mensaje; el humano copia/pega/envía desde su cuenta oficial. Esto es deliberado y no negociable.
+
+---
+
+## 3. Principios de diseño — qué SÍ y qué NO
+
+**SÍ:**
+- Solo lectura de datos **públicos**.
+- Outreach manual (copy/paste). Quizás correos más adelante, nunca DMs automáticos.
+- Cuentas **quemables**: el dueño comprará varios chips baratos de telefonía para crear cuentas que no le duela perder (verificación por SMS). Nunca la cuenta personal o de negocio.
+- **Login manual** en Chrome; el sistema se engancha a una sesión ya abierta y logueada.
+- **Monitoreo presencial:** el dueño estará viendo en vivo. Si una cuenta se bloquea, él la cambia a mano por otra.
+- Control de ritmo (delays humanos, lotes chicos) como **núcleo**, no como parche.
+
+**NO:**
+- No DMs automáticos por Instagram.
+- **No se guardan credenciales de Instagram en la base de datos** (decisión explícita del dueño).
+- No n8n, no Google Sheets, no Gmail.
+- No correr un solo proceso gigante; se separa en workers.
+- No buscar un proyecto de GitHub que lo haga "todo" (suelen estar rotos; IG cambia mucho).
+
+---
+
+## 4. Stack técnico decidido
+
+| Capa | Tecnología |
+|---|---|
+| Lenguaje | Python |
+| Automatización de navegador | **Playwright + playwright-stealth** |
+| Navegador | Chrome (logueado a mano, con **puerto de debug remoto** `--remote-debugging-port`) |
+| Base de datos | **PostgreSQL** corriendo en una **Raspberry Pi** en la red local |
+| Sesión | conexión a Chrome ya abierto / `storage_state.json` |
+| Exportación | consulta SQL → CSV **manual** (el dueño entra a la DB y lo saca) |
+| IA (fase posterior) | redacción de mensajes personalizados |
+
+**Entorno:**
+- **Desarrollo:** Mac (donde está el repo con git).
+- **Ejecución:** ⚠️ PENDIENTE DE CONFIRMAR. En la conversación se mencionó Windows 10, Windows 11 y Mac en distintos momentos. **Hay que aclarar dónde correrá realmente el sistema**, porque cambia el comando exacto para abrir Chrome con puerto de debug.
+- **DB:** Raspberry Pi en red local (solo guarda texto; aguanta cientos de miles de filas sin problema).
+
+---
+
+## 5. Arquitectura
+
+Dos workers que se coordinan **a través de la base de datos** (sin colas ni mensajería), mediante el campo `status` en la tabla `counts`:
+
+```
+seeds ──▶ worker_following ──▶ counts (status='new')
+                                   │
+                                   ▼
+                          worker_enrich ──▶ counts (status='scanned' + score + verdict)
+                                   │
+                                   ▼
+                       consulta SQL ──▶ CSV (manual)
+```
+
+`worker_following` **PRODUCE** (volumen, rápido, barato). `worker_enrich` **CONSUME** (señal, lento, caro, riesgoso). Se separan para que, si Instagram bloquea en la fase cara (enrich), lo ya descubierto quede a salvo.
+
+> **CRÍTICO:** con UNA sola cuenta, los workers corren **SECUENCIAL**, nunca en paralelo. Dos navegadores con la misma sesión = bandera roja para Instagram. La concurrencia será feature del pool de cuentas, no de v1.
+
+### Estructura de carpetas propuesta
+```
+outreach/
+  config.py            # delays, tamaños de lote, keywords, rutas
+  .env                 # credenciales de Postgres (FUERA de git)
+  schema.sql           # las 2 tablas
+  db.py                # conexión + helpers
+  session.py           # se engancha a Chrome / carga sesión, lanza stealth
+  rate.py              # delays humanos, topes por sesión, detección de bloqueo
+  scoring.py           # pesos de keywords/links → score + razón
+  worker_following.py  # descubrir
+  worker_enrich.py     # analizar y calificar
+  storage_state.json   # (generado, FUERA de git)
+```
+`rate.py` y `session.py` son **compartidos**: toda la lógica delicada (ritmo, bloqueos, sesión) vive en un solo lado y los workers quedan delgados.
+
+---
+
+## 6. Los dos workers (v1)
+
+### `worker_following` — DESCUBRIR
+- **Función única:** encontrar usernames nuevos. No lee bios, no puntúa, no clasifica.
+- **Entrada:** filas de `seeds` con `actived = true`, por prioridad.
+- **Proceso:** por cada seed → abre `instagram.com/{seed}` → abre su lista de **following** (modal) → scroll en tandas → guarda usernames nuevos en `counts` con `status='new'`, `seed_origen`.
+- **Aporta:** VOLUMEN. Convierte ~15 seeds en miles de candidatos.
+
+### `worker_enrich` — ANALIZAR Y CALIFICAR
+- **Función única:** tomar los `status='new'`, visitarlos, leer, puntuar y dar veredicto.
+- **Entrada:** `counts WHERE status='new'`, en **lotes chicos**.
+- **Proceso:** abre `instagram.com/{username}` (una sola carga, mínima interacción).
+  - **¿Privado?** → descarta del análisis pero **registra la fila** con `verdict='private'`, `status='scanned'`. (NO se borra, para no re-descubrirlo y re-visitarlo en el futuro.)
+  - **¿No existe?** → `verdict` correspondiente.
+  - Si sirve: extrae nombre, # followers, bio, link externo.
+- **Scoring:** normaliza el texto primero (minúsculas, sin acentos) para que "COMPRAR ENTRADAS" matchee igual → corre `scoring.py` → guarda `score` + `score_reason`.
+- **Salida:** misma fila actualizada, `status='scanned'`, con `score` y `verdict`.
+- **Aporta:** SEÑAL. Es el worker más riesgoso (una carga de página por perfil) → va más lento y en lotes más chicos que following.
+
+### Comportamiento compartido por ambos
+- **Dedup:** `UNIQUE(username)` + `ON CONFLICT DO NOTHING`. Re-ver un username no rompe ni duplica.
+- **Tope de sesión:** por **CANTIDAD** (no por tiempo) — ej. N usernames descubiertos / N perfiles enriquecidos. Al llegar, corta limpio y reporta cuántos.
+- **Detección de bloqueo:** si IG muestra challenge o "Try again later" → **FRENA EN SECO**, no insiste, avisa fuerte para que el dueño cambie de cuenta a mano. (Esto se queda aunque el cambio de cuenta sea manual: el worker debe PARAR solo, no seguir golpeando IG.)
+- Cada worker se detiene con `Ctrl+C` y retoma por el cursor de seed.
+
+---
+
+## 7. Esquema de base de datos (PostgreSQL) — versión final acordada
+
+### Tabla `counts`
+| columna | tipo | nota |
+|---|---|---|
+| username | text UNIQUE NOT NULL | identidad |
+| name | text NULL | |
+| bio | text NULL | descripción del perfil |
+| email | text NULL | si aparece en bio |
+| external_link | text NULL | link de bio (passline, linktree, etc.) — **crítico para el scoring** |
+| followers | int NULL | |
+| sell_tickets | bool DEFAULT false | **true SOLO si hay link de ticketera conocida** |
+| profile_type | text NULL | **libre** (no enum): "dj", "organizador", "dj, organizador" |
+| music_genre | text NULL | **libre** (no enum): "techno", "rock", null |
+| score | int DEFAULT 0 | |
+| score_reason | text NULL | qué señales sumaron: "boletos+passline+dj" |
+| status | text DEFAULT 'new' | **pipeline:** `new` → `scanned` → `failed` |
+| verdict | text NULL | **clasificación:** `lead`, `discarded_attendee`, `private`, `unknown` |
+| message | text NULL | mensaje IA para copiar/pegar (se llena en fase posterior) |
+| seed_origen | text NULL | de qué seed salió |
+| created_at | timestamptz DEFAULT now() | |
+| updated_at | timestamptz DEFAULT now() | |
+
+### Tabla `seeds`
+| columna | tipo | nota |
+|---|---|---|
+| username | text UNIQUE NOT NULL | |
+| name | text NULL | |
+| completed | bool DEFAULT false | true cuando se escaneó todo su círculo |
+| actived | bool DEFAULT true | lo controla el humano; false = no se usa como seed |
+| last_scan | timestamptz NULL | para resume / saber cuándo se tocó |
+
+---
+
+## 8. Decisiones clave tomadas (para NO volver a discutir)
+
+1. **Dos columnas separadas para estado:** `status` (¿ya lo procesé? = pipeline) y `verdict` (¿qué es? = clasificación). Razón: mezclarlas (como tenía el borrador original con un solo enum) hace que al marcar algo como descartado pierdas saber si ya lo escaneaste. Un privado ahora es `status='scanned'` + `verdict='private'` sin perder nada.
+2. **NADA de enums cerrados** para `profile_type` y `music_genre` → texto libre. Razón: aún no se conoce el dominio real de categorías; un enum encajona (un perfil puede ser DJ *y* organizador, hacer techno *y* rock).
+3. **`sell_tickets` = true solo con link de ticketera conocida**, no con cualquier keyword. El detalle fino de qué disparó el puntaje va en `score_reason`, no en el bool.
+4. **Umbral de lead: `score >= 10`** (escala 0–100). Los **pesos los define el dueño** y viven en `scoring.py` (un solo archivo, fácil de tunear).
+5. **Tope de sesión por cantidad, no por tiempo.** Más predecible.
+6. **Privados se descartan del análisis pero se registran** (`verdict='private'`) para no re-visitarlos.
+7. **NO se guardan credenciales de IG en la DB.** El dueño abre Chrome logueado a mano y el sistema se engancha.
+8. **Sin tabla `accounts` en v1.** Como el dueño maneja el cambio de cuenta manualmente y en vivo, los cooldowns automáticos sobran por ahora. El esquema puede crecer a un pool después sin reescribir.
+9. **Sin proxies en v1.** Con una cuenta calentada y ritmo bajo, la IP residencial (casa) aguanta. Los proxies residenciales entran con el pool.
+10. **Una sola cuenta primero, secuencial.** Calentar, probar a bajo volumen, y solo después meter los chips.
+11. **Login manual una vez** (no automatizado) — automatizar el login es lo que más rápido quema cuentas.
+12. **El "resume" es a nivel seed completa / pendiente**, NO a media lista de following. Razón: el DOM de la lista de following no expone un cursor real; si paras a la mitad y vuelves, arrancas desde arriba (el dedup hace que sea correcto, solo desperdicia scroll). Perfecto para seeds con <2-3k following; imperfecto para mega-seeds (se resuelve después si pega).
+
+---
+
+## 9. Realidades / riesgos honestos a tener presentes
+
+- **Viola los ToS de Instagram** (scraping). Riesgo legal **bajo** por ser datos públicos + read-only + outreach manual, pero existe.
+- **Las cuentas se queman, NO las IPs residenciales.** Instagram casi nunca banea permanente una IP de casa; da soft-block/rate-limit temporal que se quita en horas/días. Lo que sí banea agresivo es **la cuenta**. Por eso los chips quemables.
+- **Un VPS EMPEORA el problema, no lo resuelve.** Instagram marca rangos de IP de datacenter como sospechosos por default; una IP de VPS se bloquea *más* rápido que la de casa. Por eso se corre desde la máquina local con IP residencial. (Si algún día se necesita aislar IP, la respuesta son **proxies residenciales/móviles** de paga — IPRoyal, Smartproxy, Bright Data — no un VPS pelón.)
+- **El cuello de botella real NO es el código, es la gestión de cuentas:** calentar cuentas nuevas (warm-up de varios días antes de usarlas) y rotar las quemadas consume más tiempo que escribir scrapers. Presupuestar ese dolor.
+- **Tip:** idealmente loguear los chips quemables en un **perfil de Chrome aparte**, no en el Chrome personal con la cuenta de Google real. Mezclar el burner con la identidad real es feo.
+- **Alternativa build-vs-buy considerada:** para puro descubrimiento de leads existe la opción de un actor manejado de **Apify** (scrapers de Instagram que cobran por resultado y se comen el problema de proxies/baneos). El build custom se justifica por control fino, volumen y costo bajo a escala. Se eligió build, pero queda anotado.
+
+---
+
+## 10. Estado actual
+
+- ✅ **Diseño cerrado** (arquitectura, esquema de las 2 tablas, comportamiento de los 2 workers, decisiones).
+- ✅ **README.md** redactado (existe como archivo aparte; contiene el diseño general).
+- ⏳ **Nada de código aún.** No se ha escrito `schema.sql` ni los workers.
+- 🟡 **Pendiente: migrar a Claude Code** para escribir el código directo en el repo (motivo de este handoff).
+
+---
+
+## 11. Próximos pasos (en orden)
+
+1. **Crear `schema.sql`** con las tablas `counts` y `seeds` tal como están en la sección 7.
+2. **Confirmar dónde corre el sistema** (Win 10 / Win 11 / Mac) y definir el **comando exacto para abrir Chrome con `--remote-debugging-port`**, que irá en `session.py`.
+3. **Escribir `session.py`** (engancharse al Chrome abierto + stealth + check de login).
+4. **Escribir `rate.py`** (delays humanos, tope por cantidad, detección de bloqueo).
+5. **Escribir `scoring.py`** (el dueño aporta los pesos; señales ya definidas — ver sección 12).
+6. **Escribir `worker_following.py`** (descubrimiento por following de seeds).
+7. **Escribir `worker_enrich.py`** (visitar, extraer, puntuar, clasificar).
+8. **Cargar las seeds reales** del dueño (sus 10–20 perfiles ancla) — **aún no las ha entregado**.
+9. Calentar una cuenta quemable, correr a bajo volumen, observar.
+
+---
+
+## 12. Detalle de scoring (señales ya definidas; pesos los pone el dueño)
+
+**Keywords en bio** (texto normalizado a minúsculas y sin acentos):
+`comprar`, `comprar tickets`, `tickets`, `entradas`, `boletos`, `evento`, `eventos`, `dj`, `booking`, `promotor`, `festival`, `concierto`, `tocada`, `rave`, `techno`, `house`, `rock`, `metal`, `live music`, `venue`, `club`, `presenta`, etc.
+
+**Dominios de ticketeras en el link externo** (peso alto + activan `sell_tickets=true`):
+`passline`, `shotgun`, `eventbrite`, `boletia`, `ticketmaster`, `linktr.ee`, `arema`.
+
+Siempre se guarda `score_reason` (qué señales sumaron), no solo el número, para poder filtrar y auditar el CSV después.
+
+---
+
+## 13. Roadmap — fases (NO construir lo de "más adelante" todavía)
+
+**v1 (alcance actual):**
+- `worker_following` (descubrimiento por *following* de seeds)
+- `worker_enrich` (scoring por keywords de tickets/compra + links de ticketeras)
+- Una sola cuenta, sin proxies, secuencial.
+
+**Más adelante (anotado, no construir aún):**
+- Pool de cuentas + rotación + cooldowns automáticos (tabla `accounts`).
+- Proxies residenciales/móviles.
+- Otras estrategias de descubrimiento (de las 9 que se identificaron en la investigación inicial, v1 solo usa *following* + *links de ticketing*). Las demás: búsqueda por **palabras clave en bio**, por **hashtags**, por **followers** de seeds, por **posts** (tags/menciones/colaboradores/hashtags), por **comentarios**, por **colaboraciones (Collaborator)**, y **profundidad/niveles** (followers de followers).
+- **Detección de flyers por OCR/visión** (la más vistosa pero el peor ROI inicial; dejar para v3). Stack tentativo: EasyOCR/PaddleOCR + OpenCV.
+- **Generación de mensajes con IA** (llena la columna `message`). Se corre DESPUÉS del scraping en lote, no durante.
+- Otras fuentes más allá de Instagram: Facebook Events, Resident Advisor, Eventbrite, Meetup, Bandsintown, Songkick, TikTok, Google Maps.
+
+---
+
+## 14. Preguntas abiertas para resolver al retomar
+
+1. **¿Dónde corre el sistema?** Win 10 / Win 11 / Mac — define el comando de Chrome con puerto de debug.
+2. **¿El `worker_enrich` intenta llenar `profile_type` / `music_genre` / `email` ya con reglas simples**, o se dejan vacíos para que la IA los llene en una fase posterior? (Quedó sin cerrar.)
+3. **Seeds reales:** el dueño aún debe entregar sus 10–20 perfiles ancla (DJs, venues, ticketeras, festivales que ya conoce). Sin ellos, `worker_following` no tiene de dónde arrancar.
+4. **Pesos exactos del scoring** (el dueño los define).
+
+---
+
+*Fin del handoff. Otro Claude debería poder retomar el trabajo desde aquí sin perder ninguna decisión.*

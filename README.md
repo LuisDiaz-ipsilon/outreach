@@ -221,3 +221,33 @@ python worker_enrich.py
 - **Un VPS empeora el problema:** Instagram marca IPs de datacenter como sospechosas. Correr desde IP residencial (casa) es más seguro que un VPS pelón.
 - **El cuello de botella real no es el código, es la gestión de cuentas:** calentar cuentas nuevas (warm-up de varios días) y rotarlas consume más tiempo que escribir scrapers.
 - **El "resume" es a nivel seed completa**, no a media lista de following (el DOM no da cursor real). Para seeds con <2-3k following es perfecto; para mega-seeds es imperfecto y se resuelve después.
+
+---
+
+## Decisiones
+
+> Bitácora de decisiones tomadas durante el desarrollo. Cada entrada: fecha + título + descripción. Lo más reciente arriba.
+
+### 2026-06-28 — Código v1 completo (7 archivos) y acceso a datos sin ORM
+Se escribieron los 7 archivos del sistema: `config.py` (DB desde `.env`, delays, topes de sesión por cantidad, puerto de Chrome y `setup_logging`), `db.py`, `scoring.py`, `rate.py`, `session.py`, `worker_following.py` y `worker_enrich.py`. **Acceso a datos sin ORM** (decisión explícita del dueño): puro **SQL crudo siempre parametrizado** (placeholders `%s`) vía `psycopg3`, en **autocommit** para que cada escritura persista de inmediato y un bloqueo a media corrida no pierda lo ya hecho. Sintaxis verificada con `py_compile`; no se ejecutó la lógica (el sistema corre en la Win, aún apagada). Los **selectores del DOM de Instagram** (modal de following, bio, links, followers) quedan marcados con `TODO`: casi seguro necesitarán ajuste fino en vivo — inevitable en scraping de IG. Los **links externos pueden ser varios** (IG permite hasta 5): el enrich los extrae todos, el scoring los revisa todos, y se guardan juntos en `external_link` separados por salto de línea.
+
+### 2026-06-28 — Modelo de scoring (pesos por keyword; ticketeras = lead seguro)
+El scoring vive en `scoring.py` y es lo único que se tunea para calificar. `score` = suma de pesos de las keywords encontradas (sobre **name + bio**) + peso por cada link de ticketera, con **tope 100**; **lead si `score >= 10`**. Keywords de **una sola palabra** en un **diccionario plano `{palabra: peso}`** (control fino, no por grupos), normalizadas a **minúsculas sin acentos** y con **coincidencia por palabra completa** (`dj` no suma dentro de `adjunto`). Las keywords de **venta directa** (`boletos`, `ticket`, `entradas`, `comprar`…) y los **dominios de ticketera** pesan **100** (califican solas); solo los dominios de ticketera activan además `sell_tickets=true`. **Sin señales negativas**: si no acumula puntos, no es lead (`discarded_attendee`); `private`/`unknown` los pone el worker. **Pendiente del dueño:** llenar `DOMINIOS_TICKETERA` y afinar los pesos de apoyo.
+
+### 2026-06-28 — Operación: Windows 10, dos comandos, logging dual y freno por bloqueo
+Confirmado **Windows 10** como SO de ejecución (se evaluó Linux y se descartó: Playwright + Chrome corren igual en Windows e Instagram no distingue el SO; lo que protege es IP residencial + ritmo + cuenta calentada). Chrome se abre a mano con **perfil aparte** y puerto de debug (`--remote-debugging-port=9222 --user-data-dir`), y `session.py` se engancha por CDP. El sistema se reduce a **2 comandos** (`worker_following.py`, `worker_enrich.py`). **Logging dual:** todo sale a consola **y** a un único archivo `outreach.log` en *append*, con **fecha + hora + descripción** por línea; el dueño lo trunca a mano. **Detección de bloqueo** (`rate.py`): ante un challenge o rate-limit, el worker **frena en seco** y avisa fuerte para que el dueño cambie de cuenta a mano (supervisión presencial). **`playwright-stealth` es secundario** (nos enganchamos a un Chrome real logueado). `worker_enrich` v1 extrae **email** desde la bio; `profile_type`/`music_genre` se posponen.
+
+### 2026-06-28 — Base de datos provisionada y verificada en la Raspberry Pi
+PostgreSQL instalado en la **Raspberry Pi** (hostname `sdpi`, IP local `192.168.1.22` por DHCP). Se creó el **usuario `outreach`** y la **base `outreachdb`** (owner `outreach`), con acceso remoto a la red local (`listen_addresses='*'` + regla `host outreachdb outreach 192.168.1.0/24 scram-sha-256` en `pg_hba.conf`). La **contraseña vive en `.env`** (ignorado por git), nunca en el repo. Esquema aplicado y verificado (tablas `counts` y `seeds`). **Conexión remota verificada** desde la Mac de desarrollo con `python db.py`. **Pendiente:** fijar la IP de la Pi (reserva DHCP o `sdpi.local`) para que el cliente no se rompa cuando cambie la IP.
+
+### 2026-06-27 — `schema.sql` definitivo (DDL real)
+Se pasó el borrador en pseudo-SQL a DDL ejecutable en `docs/sql/schema.sql`. Decisiones del esquema: (1) **PK surrogada** `id bigint IDENTITY` + `username UNIQUE NOT NULL` como clave natural, lo que habilita `ON CONFLICT (username) DO NOTHING`; (2) **`CHECK` en `status`** (`new|scanned|failed`) porque la coordinación entre workers depende de que el valor sea exacto — un typo rompería el pipeline; (3) `profile_type`, `music_genre` y `verdict` quedan **libres** (sin CHECK), respetando la decisión previa de no encajonar; (4) **trigger `set_updated_at`** reutilizable mantiene `updated_at`; (5) **índices**: parcial sobre `status='new'` (pickup FIFO del enrich), `(verdict, score)` (consulta final de leads), y parcial de seeds activas pendientes.
+
+### 2026-06-27 — Aislamiento total del entorno de ejecución
+El sistema corre en una máquina **Windows dedicada**, completamente aislada de la red local y de las cuentas reales del dueño. Internet vía **chips de datos desechables** (datos ilimitados de Telcel, baratos) compartidos desde un teléfono que también está aislado de la red local y de cuentas personales. En esa máquina **nunca** se abren cuentas personales ni de negocio. Objetivo: que un baneo/quemado de cuenta o IP no toque jamás la identidad real ni la infraestructura del dueño.
+
+### 2026-06-27 — `.gitignore` endurecido
+Se reemplazó el `.gitignore` (que solo ignoraba basura de macOS) por uno completo que protege: secretos (`.env*`, `storage_state.json`), datos exportados con info personal scrapeada (`exports/`, `*.csv`), artefactos de Python, logs y archivos de IDE. Razón: el diseño exige que credenciales de Postgres y la sesión de Instagram **nunca** entren a git.
+
+### 2026-06-27 — Bitácora de decisiones en el README
+Toda decisión de diseño se registra en esta sección con fecha, título y descripción, para tener trazabilidad sin depender de la memoria de chat.

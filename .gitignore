@@ -1,0 +1,40 @@
+# === Secretos / sesión (NUNCA en git) ===
+.env
+.env.*
+!.env.example
+storage_state.json
+*.session
+
+# === Datos exportados (contienen datos personales scrapeados) ===
+exports/
+*.csv
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === Logs ===
+*.log
+logs/
+
+# === macOS ===
+.DS_Store
+._*
+
+# === IDE / editores ===
+.vscode/
+.idea/
+*.swp
+*~

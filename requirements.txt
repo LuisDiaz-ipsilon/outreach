@@ -1,0 +1,10 @@
+# --- Núcleo ---
+psycopg[binary]>=3.1      # cliente PostgreSQL (SQL crudo, sin ORM)
+python-dotenv>=1.0        # leer credenciales desde .env
+playwright>=1.40          # automatización del navegador
+
+# --- Opcional ---
+# playwright-stealth tiene un rol secundario en este proyecto (nos enganchamos
+# a un Chrome real logueado a mano). Si su instalación da problemas, comenta
+# esta línea; el sistema funciona sin ella. Ver session.py / README.
+playwright-stealth>=1.0.6

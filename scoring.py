@@ -81,6 +81,7 @@ DOMINIOS_TICKETERA = [
     "tusboletos.mx",
     "wegow.com",
     "ticketon.com",
+    "ticketapp.mx"
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────

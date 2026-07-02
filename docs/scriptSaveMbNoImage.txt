@@ -1,0 +1,3 @@
+const style = document.createElement('style');
+style.textContent = 'img { display: none !important; }';
+document.head.appendChild(style);

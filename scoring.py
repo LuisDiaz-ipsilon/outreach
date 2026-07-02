@@ -29,21 +29,26 @@ import unicodedata
 PESOS_KEYWORDS = {
     # Venta directa (señal fortísima)
     "boletos": 100, "boleto": 100, "ticket": 100, "tickets": 100,
-    "entradas": 100, "entrada": 100, "comprar": 100, "compra": 100,
-    "preventa": 100, "cover": 100,
+    "entradas": 100, "entrada": 100,
+    "preventa": 100, "cover": 100, 
 
     # Organizador / mundo de eventos
-    "evento": 30, "eventos": 30, "festival": 30, "concierto": 30,
-    "presenta": 30, "booking": 30, "promotor": 30, "productora": 30,
-    "lineup": 30, "tour": 30, "tocada": 30, "rave": 30, "fiesta": 30,
+    "evento": 100, "eventos": 100, "festival": 100, "festivales": 100,
+    "concierto": 100, "conciertos": 100, "tocada": 100, "tocadas": 100,
+    "presenta": 12, "booking": 100, "promotor": 100, "productora": 100,
+    "lineup": 100, "tour": 100, "rave": 100, "fiesta": 19,
+    "price": 19, "live": 12, 
 
     # Rol / lugar
-    "dj": 10, "venue": 10, "club": 10, "antro": 10, "bar": 10,
-    "salon": 10, "terraza": 10,
+    "venue": 80, "club": 80, "antro": 80, "bar": 80,
+    "terraza": 80, "Live Music Venue": 90,
+
+    #Musicos
+    "musico": 80, "dj":80, "musician/band": 90, "musician": 90, "band": 90,
 
     # Género musical (contexto débil)
-    "techno": 5, "house": 5, "rock": 5, "metal": 5,
-    "reggaeton": 5, "cumbia": 5, "electronica": 5, "edm": 5, "trap": 5,
+    "techno": 5, "house": 5, "rock": 5, "metal": 5, "djs": 15,
+    "reggaeton": 5, "cumbia": 5, "electronica": 5, "edm": 15, "trap": 5
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,20 +58,36 @@ PESOS_KEYWORDS = {
 #    (Solo el dominio basta: "passline" matchea "passline.com/eventos/...")
 # ─────────────────────────────────────────────────────────────────────────────
 DOMINIOS_TICKETERA = [
-    # "eventbrite.com",
-    # "passline.com",
-    # "boletia.com",
-    # "ticketmaster.com.mx",
-    # "arema.mx",
-    # "shotgun.live",
-    # ... AGREGA AQUÍ ...
+    "eventbrite.com",
+    "eventbrite.com.mx",
+    "passline.com",
+    "boletia.com",
+    "ticketmaster.com.mx",
+    "arema.mx",
+    "shotgun.live",
+    "eticket.mx",
+    "superboletos.com",
+    "funticket.mx",
+    "ticketnowmexico.com",
+    "ticketpoint.mx",
+    "stubhub.mx",
+    "ocesa.com.mx",
+    "ticketfairy.mx",
+    "ticketfairy.com",
+    "ticketopolis.com",
+    "boletomovil.com",
+    "donboleton.com",
+    "boletopolis.com",
+    "tusboletos.mx",
+    "wegow.com",
+    "ticketon.com",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ⚙️  TUNEABLE — constantes
 # ─────────────────────────────────────────────────────────────────────────────
 PESO_TICKETERA = 100   # peso de un link de ticketera
-UMBRAL_LEAD = 10       # score >= esto => verdict 'lead'
+UMBRAL_LEAD = 20       # score >= esto => verdict 'lead'
 TOPE_SCORE = 100       # el score nunca pasa de aquí
 
 

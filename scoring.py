@@ -44,7 +44,7 @@ PESOS_KEYWORDS = {
     "terraza": 80, "Live Music Venue": 90,
 
     #Musicos
-    "musico": 80, "dj":80, "musician/band": 90, "musician": 90, "band": 90,
+    "musico": 80, "dj":80, "musician/band": 90, "musician": 90, "band": 90, "sello discografico": 90,
 
     # Género musical (contexto débil)
     "techno": 5, "house": 5, "rock": 5, "metal": 5, "djs": 15,

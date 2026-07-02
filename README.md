@@ -1,8 +1,8 @@
-# Outreach — Motor de descubrimiento de leads para PAS Ticket
+# Outreach — Motor de descubrimiento de leads para <EL NEGOCIO>
 
 Sistema de **inteligencia comercial** para encontrar organizadores de eventos y músicos en Instagram, calificarlos, y dejarlos listos para un outreach **manual** (copiar/pegar desde la base de datos).
 
-No es un "Instagram scraper" genérico ni un bot de mensajería. Es un motor que construye una base de datos propia de potenciales clientes para PAS Ticket.
+No es un "Instagram scraper" genérico ni un bot de mensajería. Es un motor que construye una base de datos propia de potenciales clientes para <EL NEGOCIO>.
 
 ---
 

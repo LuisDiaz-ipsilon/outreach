@@ -9,7 +9,7 @@
 **Nombre del repo:** `outreach`
 **Ubicación local (Mac, ya tiene git):** `/Volumes/storage/lake1/Git-rasp/outreach`
 
-**Qué es:** Un motor de **inteligencia comercial / descubrimiento de leads**. NO es un "Instagram scraper" genérico ni un bot de mensajería. Construye una base de datos propia de potenciales clientes para **PAS Ticket**.
+**Qué es:** Un motor de **inteligencia comercial / descubrimiento de leads**. NO es un "Instagram scraper" genérico ni un bot de mensajería. Construye una base de datos propia de potenciales clientes para **<EL NEGOCIO>**.
 
 **Objetivo en una línea:**
 ```
@@ -26,7 +26,7 @@ De ahí el dueño arma un CSV **a mano** y contacta desde su cuenta oficial.
 
 ## 2. Contexto de negocio
 
-- **PAS Ticket** es el negocio: ayuda a organizadores a vender accesos/entradas a eventos directamente por WhatsApp, sin apps adicionales ni páginas complicadas.
+- **<EL NEGOCIO>** es el negocio: ayuda a organizadores a vender accesos/entradas a eventos directamente por WhatsApp, sin apps adicionales ni páginas complicadas.
 - **Quién es un lead (cliente potencial):** DJs, dueños de bandas, promotores, dueños de antros/venues, organizadores de expos, productoras, festivales, eventos privados con venta de acceso, y en general **cualquier perfil que cobre entrada o venda boletos**.
 - **Mercado:** México (Monterrey, CDMX, Guadalajara, etc.).
 - **El outreach es 100% MANUAL:** el sistema descubre, califica y **redacta** un mensaje; el humano copia/pega/envía desde su cuenta oficial. Esto es deliberado y no negociable.

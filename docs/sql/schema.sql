@@ -1,5 +1,5 @@
 -- ============================================================
--- Esquema  ·  outreach (PAS Ticket)
+-- Esquema  ·  outreach (<EL NEGOCIO>)
 -- PostgreSQL 13+   ·   Raspberry Pi, red local
 -- Ejecutar:  psql -U outreach -d outreach -f schema.sql
 -- ============================================================

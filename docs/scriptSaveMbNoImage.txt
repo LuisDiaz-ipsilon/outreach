@@ -1,3 +1,8 @@
 const style = document.createElement('style');
-style.textContent = 'img { display: none !important; }';
+style.textContent = `
+  img { display: none !important; }
+  video { display: none !important; }
+  [role="img"] { display: none !important; }
+  * { background-image: none !important; }
+`;
 document.head.appendChild(style);

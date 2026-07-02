@@ -11,6 +11,7 @@ Detener: Ctrl+C (retoma por seed; el dedup hace que repetir sea inofensivo).
     revisa las funciones marcadas con TODO con un perfil real abierto.
 """
 
+import re
 import sys
 
 from playwright.sync_api import sync_playwright
@@ -52,12 +53,19 @@ def descubrir_following(page, seed, conn):
     rate.dormir((2.0, 4.0), logger, "carga perfil")
     rate.revisar_bloqueo(page, logger)
 
-    # Abrir el modal de "following".  TODO: verificar selector en vivo.
+    # Abrir el modal de "seguidos" (following). El link ya NO usa /following/;
+    # ahora es un <a href="#"> cuyo texto termina en "seguidos" (o "following"
+    # si la cuenta está en inglés). Clickeamos por TEXTO, no por href.
     try:
-        page.click(f'a[href="/{seed}/following/"]', timeout=10000)
+        page.get_by_role(
+            "link", name=re.compile(r"\bseguidos\b|\bfollowing\b", re.I)
+        ).first.click(timeout=10000)
     except Exception:
-        logger.warning(f"@{seed}: no pude abrir 'following' (¿selector cambió o perfil privado?). Salto.")
-        return nuevos, True
+        try:
+            page.click('a:has-text("seguidos")', timeout=5000)  # respaldo
+        except Exception:
+            logger.warning(f"@{seed}: no pude abrir 'seguidos' (¿selector cambió o perfil privado?). Salto.")
+            return nuevos, True
 
     rate.dormir((2.0, 4.0), logger, "abre modal")
 

@@ -1,21 +1,23 @@
 """
 worker_enrich.py — ANALIZAR Y CALIFICAR (señal).
 
-Toma perfiles con status='new' en lotes chicos, los visita una vez, extrae
-name/bio/followers/links/email, corre el scoring y guarda el verdict.
-Es el worker más caro y riesgoso (una carga de página por perfil).
+Toma perfiles con status='new' en lotes chicos, los visita una vez, y lee sus
+datos del JSON que Instagram carga por detrás al abrir el perfil (la query
+GraphQL "PolarisProfilePageContentQuery"). Es MUCHO más robusto que raspar el
+DOM (las clases tipo x1i10hfl cambian; los modales se rompen).
+
+De ese JSON (nodo data.user del perfil OBJETIVO, no del viewer) saca:
+full_name, biography, category (etiqueta), follower_count, is_private y
+bio_links (TODOS los enlaces, ya con la URL limpia).
+El scoring usa name + bio + category; los links se revisan contra las ticketeras.
 
 Correr:  python worker_enrich.py
 Detener: Ctrl+C (lo ya guardado queda; el autocommit persiste cada perfil).
-
-⚠️  La extracción depende del DOM de Instagram, que cambia seguido. Las
-    funciones marcadas con TODO casi seguro necesitarán ajuste fino la primera
-    vez que corras en vivo con un perfil real. Es normal en scraping de IG.
 """
 
+import json
 import re
 import sys
-from urllib.parse import parse_qs, unquote, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -27,10 +29,10 @@ from config import DELAY_PERFIL, TOPE_ENRICH, setup_logging
 
 logger = setup_logging("enrich")
 
-# Patrón de email para buscar en la bio.
+# Email en la bio.
 RE_EMAIL = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
-# Frases de "perfil no existe" y "perfil privado" (inglés y español).
+# Respaldos por si el JSON no llega: detectar "no existe" / "privado" en el DOM.
 SENALES_NO_EXISTE = [
     "sorry, this page isn't available",
     "esta página no está disponible",
@@ -43,106 +45,90 @@ SENALES_PRIVADO = [
 ]
 
 
-def _texto_seguro(page, selector):
-    """inner_text del primer elemento que matchee, o None si no hay/error."""
-    try:
-        el = page.query_selector(selector)
-        return el.inner_text().strip() if el else None
-    except Exception:
-        return None
+def _leer_perfil_json(page, username):
+    """Navega al perfil e intercepta la respuesta GraphQL con sus datos.
 
-
-def _extraer_name(page):
-    """Nombre visible del perfil.  TODO: verificar selector en vivo."""
-    # og:title suele venir como "Name (@username) • Instagram photos..."
-    try:
-        title = page.get_attribute('meta[property="og:title"]', "content")
-        if title:
-            return title.split("(@")[0].strip(" •")
-    except Exception:
-        pass
-    return _texto_seguro(page, "header h1, header h2")
-
-
-def _extraer_bio(page):
-    """Texto de la bio.  TODO: verificar selector en vivo (es lo más frágil)."""
-    # Intento por estructura del header; si falla, queda en None y no pasa nada.
-    bio = _texto_seguro(page, "header section > div:last-child > span")
-    if bio:
-        return bio
-    return _texto_seguro(page, 'header section span[dir="auto"]')
-
-
-def _extraer_followers(page):
-    """Número de seguidores desde og:description.  Aproximado pero estable."""
-    try:
-        desc = page.get_attribute('meta[property="og:description"]', "content")
-    except Exception:
-        desc = None
-    if not desc:
-        return None
-    # Formato: "1,234 Followers, 567 Following, 89 Posts ..." (o en español)
-    m = re.search(r"([\d.,]+)\s+(followers|seguidores)", desc.lower())
-    if not m:
-        return None
-    try:
-        return int(m.group(1).replace(",", "").replace(".", ""))
-    except ValueError:
-        return None
-
-
-def _extraer_links(page):
-    """Todos los links externos del perfil (pueden ser varios).
-
-    Instagram envuelve los externos en 'l.instagram.com/?u=<url>'; los
-    desenvuelve. TODO: verificar selector en vivo.
+    Al abrir un perfil, Instagram dispara 'PolarisProfilePageContentQuery' contra
+    /api/graphql. La capturamos y devolvemos el nodo `data.user` del perfil
+    OBJETIVO (verificando el username, para no confundirlo con el `viewer` =
+    la cuenta logueada). Devuelve el dict `user`, o None si no llegó.
     """
-    try:
-        hrefs = page.eval_on_selector_all("header a[href]", "els => els.map(e => e.href)")
-    except Exception:
-        return []
+    captura = {}
 
-    links = []
-    for h in hrefs:
-        if not h:
-            continue
-        if "l.instagram.com" in h:
-            q = parse_qs(urlparse(h).query)
-            if "u" in q:
-                links.append(unquote(q["u"][0]))
-        elif h.startswith("http") and "instagram.com" not in h:
-            links.append(h)
-    return list(dict.fromkeys(links))  # sin duplicados, conserva orden
+    def _on_response(response):
+        if captura.get("user") or "/api/graphql" not in response.url:
+            return
+        try:
+            body = json.loads(response.text())
+        except Exception:
+            return
+        user = (body.get("data") or {}).get("user")
+        if not isinstance(user, dict):
+            return
+        # Debe ser el perfil objetivo y traer datos de perfil (no una hovercard).
+        if (user.get("username") or "").lower() != username.lower():
+            return
+        if "biography" not in user and "bio_links" not in user:
+            return
+        captura["user"] = user
+
+    page.on("response", _on_response)
+    try:
+        page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded")
+        rate.dormir((3.0, 6.0), logger, "carga perfil")
+        rate.revisar_bloqueo(page, logger)
+        # Espera a que llegue la query del perfil (hasta ~8s).
+        for _ in range(16):
+            if captura.get("user"):
+                break
+            page.wait_for_timeout(500)
+    finally:
+        page.remove_listener("response", _on_response)
+
+    return captura.get("user")
 
 
 def enriquecer_perfil(page, username):
-    """Carga el perfil y devuelve un dict con tipo y datos.
+    """Devuelve un dict {tipo, ...}. tipo: 'ok' | 'private' | 'unknown' | 'fallo'."""
+    user = _leer_perfil_json(page, username)
 
-    tipo: 'ok' (con datos), 'private', 'unknown'.
-    """
-    page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded")
-    rate.dormir((3.0, 6.0), logger, "carga perfil")
-    rate.revisar_bloqueo(page, logger)
+    if not user:
+        # No llegó el JSON: mira si el DOM dice "no existe" o "privado".
+        try:
+            cuerpo = page.inner_text("body").lower()
+        except Exception:
+            cuerpo = ""
+        if any(s in cuerpo for s in SENALES_NO_EXISTE):
+            return {"tipo": "unknown"}
+        if any(s in cuerpo for s in SENALES_PRIVADO):
+            return {"tipo": "private"}
+        return {"tipo": "fallo"}  # no se pudo leer; se reintenta luego
 
-    try:
-        cuerpo = page.inner_text("body").lower()
-    except Exception:
-        cuerpo = ""
-
-    if any(s in cuerpo for s in SENALES_NO_EXISTE):
-        return {"tipo": "unknown"}
-    if any(s in cuerpo for s in SENALES_PRIVADO):
+    if user.get("is_private"):
         return {"tipo": "private"}
 
-    bio = _extraer_bio(page)
-    email_match = RE_EMAIL.search(bio or "")
+    # Todos los enlaces: bio_links trae la URL ya limpia; external_url de respaldo.
+    links = []
+    for bl in (user.get("bio_links") or []):
+        u = bl.get("url") or bl.get("lynx_url")
+        if u:
+            links.append(u)
+    if user.get("external_url"):
+        links.append(user["external_url"])
+    links = list(dict.fromkeys(links))  # sin duplicados, conserva orden
+
+    bio = user.get("biography") or ""
+    m = RE_EMAIL.search(bio)
+
     return {
         "tipo": "ok",
-        "name": _extraer_name(page),
-        "bio": bio,
-        "followers": _extraer_followers(page),
-        "links": _extraer_links(page),
-        "email": email_match.group(0) if email_match else None,
+        "name": user.get("full_name"),
+        "bio": bio or None,
+        # La etiqueta viene como 'category' (esta query) o 'category_name' (otras).
+        "categoria": user.get("category") or user.get("category_name"),
+        "followers": user.get("follower_count"),
+        "links": links,
+        "email": m.group(0) if m else None,
     }
 
 
@@ -171,8 +157,13 @@ def main():
                 elif datos["tipo"] == "unknown":
                     db.marcar_verdict(conn, u, "unknown")
                     logger.info(f"@{u}: no disponible / no existe.")
+                elif datos["tipo"] == "fallo":
+                    db.marcar_fallido(conn, u)
+                    logger.warning(f"@{u}: no se pudo leer el JSON (status=failed, se reintenta).")
                 else:
-                    texto = f"{datos.get('name') or ''} {datos.get('bio') or ''}"
+                    texto = " ".join(filter(None, [
+                        datos.get("name"), datos.get("bio"), datos.get("categoria"),
+                    ]))
                     score, razon, sell = scoring.calcular_score(texto, datos.get("links"))
                     verdict = scoring.clasificar(score)
                     external = "\n".join(datos.get("links") or []) or None
@@ -183,7 +174,10 @@ def main():
                         followers=datos.get("followers"), sell_tickets=sell,
                         score=score, score_reason=razon or None, verdict=verdict,
                     )
-                    logger.info(f"@{u}: score={score} verdict={verdict} sell_tickets={sell} ({razon})")
+                    logger.info(
+                        f"@{u}: score={score} verdict={verdict} sell_tickets={sell} "
+                        f"followers={datos.get('followers')} cat='{datos.get('categoria')}' ({razon})"
+                    )
 
                 procesados += 1
                 rate.dormir(DELAY_PERFIL, logger, "entre perfiles")
